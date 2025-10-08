@@ -8,8 +8,8 @@
         <artifactId>spring-boot-starter-parent</artifactId>
         <version>3.2.0</version>
     </parent>
-    <groupId>gov.irs</groupId>
-    <artifactId>form8582-processor</artifactId>
+    <groupId>com.irs.form8582</groupId>
+    <artifactId>irs-form8582-processor</artifactId>
     <version>1.0.0</version>
     <name>IRS Form 8582 Processor</name>
     <description>Spring Boot application for processing IRS Form 8582 Passive Activity Loss Limitations</description>
@@ -33,7 +33,7 @@
         <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
-            <optional>true</optional>
+            <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
