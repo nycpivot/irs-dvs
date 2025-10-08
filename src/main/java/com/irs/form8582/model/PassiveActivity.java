@@ -5,13 +5,13 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 import lombok.AllArgsConstructor;
 import java.math.BigDecimal;
-import java.util.Date;
+import java.time.LocalDate;
 
 @Entity
+@Table(name = "passive_activities")
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
-@Table(name = "passive_activities")
 public class PassiveActivity {
 
     @Id
@@ -22,7 +22,7 @@ public class PassiveActivity {
     private String activityName;
 
     @Column(name = "activity_type")
-    private String activityType; // RENTAL_REDL_ESTATE, TRADE_BUSINESS, etc.
+    private String activityType; // RENTAL_REAL_ESTATE, TRADE_BUSINESS, etc.
 
     @Column(name = "current_year_income")
     private BigDecimal currentYearIncome;
@@ -43,6 +43,5 @@ public class PassiveActivity {
     private Integer taxYear;
 
     @Column(name = "created_date")
-    @Temporal(TemporalType.TIMESTAMP)
-    private Date createdDate;
+    private LocalDate createdDate;
 }
