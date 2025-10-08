@@ -5,14 +5,13 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 import lombok.AllArgsConstructor;
 import java.math.BigDecimal;
-import java.util.Date;
-import java.util.List;
+import java.time.LocalDateTime;
 
 @Entity
+@Table(name = "form_8582_data")
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
-@Table(name = "form_8582_data")
 public class Form8582Data {
 
     @Id
@@ -28,19 +27,27 @@ public class Form8582Data {
     @Column(name = "modified_agi")
     private BigDecimal modifiedAgi;
 
+    @Column(name = "total_passive_income")
+    private BigDecimal totalPassiveIncome;
+
+    @Column(name = "total_passive_loss")
+    private BigDecimal totalPassiveLoss;
+
     @Column(name = "special_allowance")
     private BigDecimal specialAllowance;
 
-    @Column(name = "total_losses_allowed")
-    private BigDecimal totalLossesAllowed;
+    @Column(name = "allowed_loss")
+    private BigDecimal allowedLoss;
+
+    @Column(name = "unallowed_loss")
+    private BigDecimal unallowedLoss;
 
     @Column(name = "filing_status")
-    private String filingStatus; // SINGLE, MARRIED_JOINT, MARRIED_SEPARATE
+    private String filingStatus;
 
-    @OneToMany(mappedBy = "form8582Data", cascade = CascadeType.ALL)
-    private List<PassiveActivity> activities;
+    @Column(name = "created_at")
+    private LocalDateTime createdAt;
 
-    @Column(name = "created_date")
-    @Temporal(TemporalType.TIMESTAMP)
-    private Date createdDate;
+    @Column(name = "updated_at")
+    private LocalDateTime updatedAt;
 }
