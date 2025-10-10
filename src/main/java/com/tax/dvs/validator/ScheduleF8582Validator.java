@@ -1,355 +1,424 @@
 package com.tax.dvs.validator;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
 import java.util.*;
 
-/**
- * Validator for IRS Schedule F to Form 8582 Matching
- * 
- * Business Rules:
- * 1. Match business names between Schedule F and Form 8582
- * 2. Validate loss calculation: Line 9 (GrossIncome) - Line 33 (TotalExpenses)
- * 3. Verify calculated loss matches Form 8582 reported loss
- * 4. Validate passive activity treatment (non-material participation)
- * 5. Verify Schedule F Line 34 (NetFarmProfitLossAmt) reporting
- * 
- * IRS Rules:
- * - Passive activity losses are limited per IRC Section 469
- * - Non-materially participated farming activities are passive
- * - Passive losses must be tracked on Form 8582
- * - Schedule F Line 34 may show $0 for passive losses disallowed by Form 8582
- */
 @Component
 public class ScheduleF8582Validator {
 
-    private static final String SCHEDULE_F_PATH = "/body/forms[]";
-    private static final String FORM_8582_PATH = "/body/forms[]";
-    private static final BigDecimal ZERO = BigDecimal.ZERO;
-
     /**
-     * Validates the entire payload for Schedule F to Form 8582 matching
+     * Validates Schedule F against Form 8582 for passive activity losses
+     * 
+     * IRS Rules:
+     * - Passive activities (non-material participation) must be reported on Form 8582
+     * - Losses from passive activities are limited and may be carried forward
+     * - Material participation activities are NOT subject to passive loss limitations
+     * - Net farm profit/loss = Gross Income - Total Expenses
      */
-    public ValidationResult validate(JsonNode payload) {
+    public ValidationResult validate(JsonNode taxReturn) {
         ValidationResult result = new ValidationResult();
-        
+        List<ValidationError> errors = new ArrayList<>();
+        List<ValidationWarning> warnings = new ArrayList<>();
+
         try {
             // Extract Schedule F forms
-            List<ScheduleFData> scheduleFForms = extractScheduleFData(payload);
+            List<ScheduleFData> scheduleFs = extractScheduleFData(taxReturn);
             
             // Extract Form 8582 data
-            Form8582Data form8582 = extractForm8582Data(payload);
-            
-            if (scheduleFForms.isEmpty()) {
-                result.addError("No Schedule F forms found in payload");
-                return result;
-            }
-            
+            Form8582Data form8582 = extractForm8582Data(taxReturn);
+
             // Validate each Schedule F
-            for (ScheduleFData scheduleF : scheduleFForms) {
-                validateScheduleF(scheduleF, form8582, result);
+            for (ScheduleFData schF : scheduleFs) {
+                // Rule 1: Calculate actual net profit/loss
+                BigDecimal calculatedNet = schF.grossIncome.subtract(schF.totalExpenses);
+                schF.setCalculatedNetProfitLoss(calculatedNet);
+
+                // Rule 2: Check if passive activity (no-material participation)
+                if (!schF.materiallyParticipated) {
+                    // Rule 3: Passive activities with losses must be on Form 8582
+                    if (calculatedNet.compareTo(BigDecimal.ZERO) < 0) {
+                        // Find matching activity on Form 8582
+                        Optional<PassiveActivity> matchingActivity = findMatchingActivity(form8582, schF);
+
+                        if (matchingActivity.isPresent()) {
+                            PassiveActivity activity = matchingActivity.get();
+                            
+                            // Rule 4: Validate loss amount matches
+                            BigDecimal absCalculatedLoss = calculatedNet.abs();
+                            if (absCalculatedLoss.compareTo(activity.currentYearLoss) != 0) {
+                                errors.add(ValidationError.builder()
+                                        .errorCode("SCHF-8582-001")
+                                        .severity("ERROR")
+                                        .fieldPath("/IRS1040ScheduleF/FarmExpensesGrp/NetFarmProfitLossAmt")
+                                        .message(String.format(
+                                                "Schedule F loss mismatch for '%s': Calculated loss $%s does not match Form 8582 loss $%s",
+                                                schF.businessName, absCalculatedLoss, activity.currentYearLoss))
+                                        .expectedValue(activity.currentYearLoss.toPlainString())
+                                        .actualValue(absCalculatedLoss.toPlainString())
+                                        .businessName(schF.businessName)
+                                        .ein(schF.ein)
+                                        .build());
+                            }
+
+                            // Rule 5: Validate NetFarmProfitLossAmt shows zero for passive losses
+                            if (schF.netFarmProfitLoss.compareTo(BigDecimal.ZERO) == 0 && calculatedNet.compareTo(BigDecimal.ZERO) < 0) {
+                                warnings.add(ValidationWarning.builder()
+                                        .warningCode("SCHF-8582-W001")
+                                        .fieldPath("/IRS1040ScheduleF/FarmExpensesGrp/NetFarmProfitLossAmt")
+                                        .message(String.format(
+                                                "Schedule F for '%s' shows $0 for NetFarmProfitLossAmt, but calculated loss is $%s. " +
+                                                "Passive losses are limited and reported on Form 8582.",
+                                                schF.businessName, absCalculatedLoss))
+                                        .businessName(schF.businessName)
+                                        .ein(schF.ein)
+                                        .build());
+                            }
+                        } else {
+                            // Rule 6: Passive activity with loss not found on Form 8582
+                            errors.add(ValidationError.builder()
+                                    .errorCode("SCHF-8582-002")
+                                    .severity("ERROR")
+                                    .fieldPath("/IRS8582/ParentWrkshtPassiveGrp")
+                                    .message(String.format(
+                                            "Passive activity '%s' with loss $%s not found on Form 8582. " +
+                                            "Passive losses must be reported on Form 8582.",
+                                            schF.businessName, absCalculatedLoss))
+                                    .expectedValue("Activity on Form 8582")
+                                    .actualValue("Not found")
+                                    .businessName(schF.businessName)
+                                    .ein(schF.ein)
+                                    .build());
+                        }
+                    } else if (calculatedNet.compareTo(BigDecimal.ZERO) >= 0) {
+                        // Rule 7: Passive activity with income should not be on Form 8582 loss section
+                        Optional<PassiveActivity> matchingActivity = findMatchingActivity(form8582, schF);
+                        if (matchingActivity.isPresent() && matchingActivity.get().currentYearLoss.compareTo(BigDecimal.ZERO) > 0) {
+                            warnings.add(ValidationWarning.builder()
+                                    .warningCode("SCHF-8582-W002")
+                                    .fieldPath("/IRS8582/ParentWrkshtPassiveGrp")
+                                    .message(String.format(
+                                            "Passive activity '%s' has income $%s but is listed on Form 8582 with loss $%s.",
+                                            schF.businessName, calculatedNet, matchingActivity.get().currentYearLoss))
+                                    .businessName(schF.businessName)
+                                    .ein(schF.ein)
+                                    .build());
+                        }
+                    }
+                } else {
+                    // Rule 8: Material participation activities should NOT be on Form 8582
+                    Optional<PassiveActivity> matchingActivity = findMatchingActivity(form8582, schF);
+                    if (matchingActivity.isPresent()) {
+                        errors.add(ValidationError.builder()
+                                .errorCode("SCHE-8582-003")
+                                .severity("ERROR")
+                                .fieldPath("/IRS8582/ParentWrkshtPassiveGrp")
+                                .message(String.format(
+                                        "Activity '%s' has material participation but is listed on Form 8582. " +
+                                        "Material participation activities are not subject to passive loss limitations.",
+                                        schF.businessName))
+                                .expectedValue("Not on Form 8582")
+                                .actualValue("On Form 8582")
+                                .businessName(schF.businessName)
+                                .ein(schF.ein)
+                                .build());
+                    }
+                }
             }
-            
-            // Validate Form 8582 completeness
-            validateForm8582Completeness(scheduleFForms, form8582, result);
-            
+
+            // Rule 9: Validate Form 8582 totals
+            validateForm8582Totals(form8582, scheduleFs, errors);
+
+            result.setValid(errors.isEmpty());
+            result.setErrors(errors);
+            result.setWarnings(warnings);
+            result.setScheduleFData(scheduleFs);
+            result.setForm8582Data(form8582);
+
         } catch (Exception e) {
-            result.addError("Validation exception: " + e.getMessage());
+            errors.add(ValidationError.builder()
+                    .errorCode("SCHE-8582-999")
+                    .severity("FATAL")
+                    .fieldPath("N/A")
+                    .message("Validation error: " + e.getMessage())
+                    .build());
+            result.setValid(false);
+            result.setErrors(errors);
         }
-        
+
         return result;
     }
 
-    /**
-     * Validates a single Schedule F against Form 8582
-     */
-    private void validateScheduleF(ScheduleFData scheduleF, Form8582Data form8582, ValidationResult result) {
-        String businessName = scheduleF.getBusinessName();
-        
-        // Rule 1: Calculate net profit/loss (Line 9 - Line 33)
-        BigDecimal calculatedNet = scheduleF.getGrossIncome().subtract(scheduleF.getTotalExpenses());
-        
-        // Rule 2: Validate material participation status
-        boolean isPassive = !scheduleF.isMateriallyParticipated();
-        
-        if (isPassive) {
-            // Rule 3: For passive activities, validate Form 8582 matching
-            validatePassiveActivity(scheduleF, calculatedNet, form8582, result);
-        } else {
-            // Rule 4: For materially participated activities, validate Line 34 reporting
-            validateActiveActivity(scheduleF, calculatedNet, result);
-        }
-    }
+    private List<ScheduleFData> extractScheduleFData(JsonNode taxReturn) {
+        List<ScheduleFData> scheduleFs = new ArrayList<>();
+        JsonNode body = taxReturn.get("body");
+        if (body == null) return scheduleFs;
 
-    /**
-     * Validates passive activity treatment
-     */
-    private void validatePassiveActivity(ScheduleFData scheduleF, BigDecimal calculatedNet,
-                                              Form8582Data form8582, ValidationResult result) {
-        String businessName = scheduleF.getBusinessName();
-        
-        // Find matching entry in Form 8582
-        PassiveActivity passiveActivity = form8582.findActivityByName(businessName);
-        
-        if (passiveActivity == null) {
-            if (calculatedNet.compareTo(ZERO) < 0) {
-                result.addError("Schedule F '" + businessName + "' has a loss of " + 
-                    calculatedNet + " but is not found on Form 8582");
-            }
-            return;
-        }
-        
-        // Rule 5: Validate business name matching
-        if (!businessName.equalsIgnoreCase(passiveActivity.getActivityName())) {
-            result.addWarning("Business name mismatch: Schedule F '" + businessName + 
-                "' vs Form 8582 '" + passiveActivity.getActivityName() + "'");
-        }
-        
-        // Rule 6: Validate loss amount matching
-        if (calculatedNet.compareTo(ZERO) < 0) {
-            BigDecimal form8582Loss = passiveActivity.getCurrentYearLoss();
-            
-            if (calculatedNet.abs().compareTo(form8582Loss) != 0) {
-                result.addError("Loss amount mismatch for '" + businessName + "': " +
-                    "Calculated loss (Line 9 - Line 33) = " + calculatedNet +
-                    ", Form 8582 loss = " + form8582Loss);
-            } else {
-                result.addSuccess("Loss amount matches for '" + businessName + "': " + 
-                    form8582Loss);
-            }
-        }
-        
-        // Rule 7: Validate Schedule F Line 34 reporting for passive losses
-        if (calculatedNet.compareTo(ZERO) < 0) {
-            if (scheduleF.getNetFarmProfitLoss().compareTo(ZERO) != 0) {
-                result.addWarning("Schedule F Line 34 for '" + businessName + 
-                    "' shows " + scheduleF.getNetFarmProfitLoss() + 
-                    " but should show $0 due to passive loss limitation (loss tracked on Form 8582)");
-            } else {
-                result.addInfo("Schedule F Line 34 for '" + businessName + 
-                    "' correctly shows $0 (passive loss limited by Form 8582)");
-            }
-        }
-    }
+        JsonNode forms = body.get("forms");
+        if (forms == null || !forms.isArray()) return scheduleFs;
 
-    /**
-     * Validates active (materially participated) activity
-     */
-    private void validateActiveActivity(ScheduleFData scheduleF, BigDecimal calculatedNet,
-                                           ValidationResult result) {
-        String businessName = scheduleF.getBusinessName();
-        
-        // Rule 8: For active activities, Line 34 should match calculated net
-        if (calculatedNet.compareTo(scheduleF.getNetFarmProfitLoss()) != 0) {
-            result.addError("Schedule F Line 34 mismatch for active activity '" + businessName + "': " +
-                "Calculated (Line 9 - Line 33) = " + calculatedNet +
-                ", Line 34 = " + scheduleF.getNetFarmProfitLoss());
-        } else {
-            result.addSuccess("Schedule F Line 34 correctly reports " + calculatedNet + 
-                "for active activity '" + businessName + "'");
-        }
-    }
-
-    /**
-     * Validates that all passive losses are properly reported on Form 8582
-     */
-    private void validateForm8582Completeness(List<ScheduleFData> scheduleFForms,
-                                                    Form8582Data form8582, ValidationResult result) {
-        // Count passive activities with losses
-        long passiveLossCount = scheduleFForms.stream()
-            .filter(sf -> !sf.isMateriallyParticipated())
-            .filter(sf -> sf.getGrossIncome().subtract(sf.getTotalExpenses()).compareTo(ZERO) < 0)
-            .count();
-            
-        if (passiveLossCount > form8582.getActivities().size()) {
-            result.addError("Form 8582 is missing passive activities: " + 
-                passiveLossCount + " passive losses found, but only " + 
-                form8582.getActivities().size() + " activities on Form 8582");
-        }
-    }
-
-    /**
-     * Extracts Schedule F data from payload
-     */
-    private List<ScheduleFData> extractScheduleFData(JsonNode payload) {
-        List<ScheduleFData> result = new ArrayList<>();
-        
-        JsonNode forms = payload.at("/body/forms");
-        if (forms == null || !forms.isArray()) {
-            return result;
-        }
-        
         for (JsonNode form : forms) {
-            String formNum = form.path("formNum").asText();
+            String formNum = getTextValue(form, "formNum");
             if ("IRS1040ScheduleF".equals(formNum)) {
-                result.add(parseScheduleF(form));
+                ScheduleFData schF = extractSingleScheduleF(form);
+                if (schF != null) {
+                    scheduleFs.add(schF);
+                }
             }
         }
-        
-        return result;
+
+        return scheduleFs;
     }
 
-    /**
-     * Parses a single Schedule F form
-     */
-    private ScheduleFData parseScheduleF(JsonNode form) {
-        ScheduleFData data = new ScheduleFData();
-        
-        JsonNode lineItems = form.path("lineItems");
-        if (!lineItems.isArray()) {
-            return data;
-        }
-        
-        for (JsonNode lineItem : lineItems) {
-            String lineName = lineItem.path("lineNameTxt").asText();
-            
-            if (lineName.contains("/FarmProprietorName/BusinessNameLine1Txt")) {
-                data.setBusinessName(lineItem.path("perReturnValueTxt").asText());
-            } else if (lineName.contains("/MateriallyParticipatedInd")) {
-                data.setMateriallyParticipated("true".equalsIgnoreCase(
-                    lineItem.path("perReturnValueTxt").asText()));
-            } else if (lineName.contains("/FarmIncomeCashMethodGrp/GrossIncomeAmt")) {
-                data.setGrossIncome(new BigDecimal(lineItem.path("perReturnValueTxt").asText("0")));
-            } else if (lineName.contains("/FarmExpensesGrp/TotalExpensesAmt")) {
-                data.setTotalExpenses(new BigDecimal(lineItem.path("perReturnValueTxt").asText("0")));
-            } else if (lineName.contains("/FarmExpensesGrp/NetFarmProfitLossAmt")) {
-                data.setNetFarmProfitLoss(new BigDecimal(lineItem.path("perReturnValueTxt").asText("0")));
+    private ScheduleFData extractSingleScheduleF(JsonNode form) {
+        ScheduleFData schF = new ScheduleFData();
+        JsonNode lineItems = form.get("lineItems");
+        if (lineItems == null || !lineItems.isArray()) return null;
+
+        for (JsonNode item : lineItems) {
+            String lineName = getTextValue(item, "lineNameTxt");
+            String value = getTextValue(item, "perReturnValueTxt");
+
+            switch (lineName) {
+                case "/IRS1040ScheduleF/FarmProprietorName":
+                    JsonNode nestedItems = item.get("lineItems");
+                    if (nestedItems != null && nestedItems.isArray()) {
+                        for (JsonNode nested : nestedItems) {
+                            if ("/IRS1040ScheduleF/FarmProprietorName/BusinessNameLine1Txt".equals(getTextValue(nested, "lineNameTxt"))) {
+                                schF.businessName = getTextValue(nested, "perReturnValueTxt");
+                            }
+                        }
+                    }
+                    break;
+                case "/IRS1040ScheduleF/EIN":
+                    schF.ein = value;
+                    break;
+                case "/IRS1040ScheduleF/PrincipalProductDesc":
+                    schF.principalProduct = value;
+                    break;
+                case "/IRS1040ScheduleF/MateriallyParticipatedInd":
+                    schF.materiallyParticipated = "true".equalsIgnoreCase(value);
+                    break;
+                case "/IRS1040ScheduleF/FarmIncomeCashMethodGrp":
+                    JsonNode incomeGrp = item.get("lineItems");
+                    if (incomeGrp != null && incomeGrp.isArray()) {
+                        for (JsonNode incomeItem : incomeGrp) {
+                            if ("/IRS1040ScheduleF/FarmIncomeCashMethodGrp/GrossIncomeAmt".equals(getTextValue(incomeItem, "lineNameTxt"))) {
+                                schF.grossIncome = parseBigDecimal(getTextValue(incomeItem, "perReturnValueTxt"));
+                            }
+                        }
+                    }
+                    break;
+                case "/IRS1040ScheduleF/FarmExpensesGrp":
+                    JsonNode expenseGrp = item.get("lineItems");
+                    if (expenseGrp != null && expenseGrp.isArray()) {
+                        for (JsonNode expenseItem : expenseGrp) {
+                            String expLine = getTextValue(expenseItem, "lineNameTxt");
+                            if ("/IRS1040ScheduleF/FarmExpensesGrp/TotalExpensesAmt".equals(expLine)) {
+                                schF.totalExpenses = parseBigDecimal(getTextValue(expenseItem, "perReturnValueTxt"));
+                            } else if ("/IRS1040ScheduleF/FarmExpensesGrp/NetFarmProfitLossAmt".equals(exLine)) {
+                                schF.netFarmProfitLoss = parseBigDecimal(getTextValue(expenseItem, "perReturnValueTxt"));
+                            }
+                        }
+                    }
+                    break;
             }
         }
-        
-        return data;
+
+        return schF;
     }
 
-    /**
-     * Extracts Form 8582 data from payload
-     */
-    private Form8582Data extractForm8582Data(JsonNode payload) {
-        Form8582Data data = new Form8582Data();
-        
-        JsonNode forms = payload.at("/body/forms");
-        if (forms == null || !forms.isArray()) {
-            return data;
-        }
-        
+    private Form8582Data extractForm8582Data(JsonNode taxReturn) {
+        Form8582Data form8582 = new Form8582Data();
+        JsonNode body = taxReturn.get("body");
+        if (body == null) return form8582;
+
+        JsonNode forms = body.get("forms");
+        if (forms == null || !forms.isArray()) return form8582;
+
         for (JsonNode form : forms) {
-            String formNum = form.path("formNum").asText();
+            String formNum = getTextValue(form, "formNum");
             if ("IRS8582".equals(formNum)) {
-                parseForm8582(form, data);
-                break;
+                JsonNode lineItems = form.get("lineItems");
+                if (lineItems == null || !lineItems.isArray()) continue;
+
+                for (JsonNode item : lineItems) {
+                    String lineName = getTextValue(item, "lineNameTxt");
+                    String value = getTextValue(item, "perReturnValueTxt");
+
+                    switch (lineName) {
+                        case "/IRS8582/OtherActivityLossAmt":
+                            form8582.totalOtherActivityLoss = parseBigDecimal(value);
+                            break;
+                        case "/IRS8582/ParentWrkshtPassiveGrp":
+                            extractPassiveActivities(item, form8582);
+                            break;
+                    }
+                }
             }
         }
-        
-        return data;
+
+        return form8582;
     }
 
-    /**
-     * Parses Form 8582 data
-     */
-    private void parseForm8582(JsonNode form, Form8582Data data) {
-        JsonNode lineItems = form.path("lineItems");
-        if (!lineItems.isArray()) {
-            return;
-        }
-        
-        for (JsonNode lineItem : lineItems) {
-            String lineName = lineItem.path("lineNameTxt").asText();
-            
-            if (lineName.contains("/ParentWrkshtPassiveGrp/WrkshtPassiveGrp")) {
-                parsePassiveActivity(lineItem, data);
+    private void extractPassiveActivities(JsonNode parentNode, Form8582Data form8582) {
+        JsonNode lineItems = parentNode.get("lineItems");
+        if (lineItems == null || !lineItems.isArray()) return;
+
+        for (JsonNode item : lineItems) {
+            String lineName = getTextValue(item, "lineNameTxt");
+            if ("/IRS8582/ParentWrkshtPassiveGrp/WrkshtPassiveGrp".equals(lineName)) {
+                PassiveActivity activity = extractSinglePassiveActivity(item);
+                if (activity != null) {
+                    form8582.passiveActivities.add(activity);
+                }
             }
         }
     }
 
-    /**
-     * Parses a single passive activity from Form 8582
-     */
-    private void parsePassiveActivity(JsonNode group, Form8582Data data) {
+    private PasYvKActivity extractSinglePassiveActivity(JsonNode activityNode) {
         PassiveActivity activity = new PassiveActivity();
-        
-        JsonNode lineItems = group.path("lineItems");
-        if (!lineItems.isArray()) {
-            return;
-        }
-        
-        for (JsonNode lineItem : lineItems) {
-            String lineName = lineItem.path("lineNameTxt").asText();
-            
-            if (lineName.contains("/NonParticipateActivityNm")) {
-                activity.setActivityName(lineItem.path("perReturnValueTxt").asText());
-            } else if (lineName.contains("/CurrentYearNetLossAmt")) {
-                activity.setCurrentYearLoss(new BigDecimal(lineItem.path("perReturnValueTxt").asText("0")));
+        JsonNode lineItems = activityNode.get("lineItems");
+        if (lineItems == null || !lineItems.isArray()) return null;
+
+        for (JsonNode item : lineItems) {
+            String lineName = getTextValue(item, "lineNameTxt");
+            String value = getTextValue(item, "perReturnValueTxt");
+
+            switch (lineName) {
+                case "/IRS8582/ParentWrkshtPassiveGrp/WrkshtPassiveGrp/NonParticipateActivityNm":
+                    activity.activityName = value;
+                    break;
+                case "/IRS8582/ParentWrkshtPassiveGrp/WrkshtPassiveGrp/CurrentYearNetLossAmt":
+                    activity.currentYearLoss = parseBigDecimal(value);
+                    break;
+                case "/IRS8582/ParentWrkshtPassiveGrp/WrkshtPassiveGrp/OverallLossAmt":
+                    activity.overallLoss = parseBigDecimal(value);
+                    break;
             }
         }
+
+        return activity.activityName != null ? activity : null;
+    }
+
+    private Optional<PassiveActivity> findMatchingActivity(Form8582Data form8582, ScheduleFData schF) {
+        return form8582.passiveActivities.stream()
+                .filter(a -> a.activityName != null && 
+                        a.activityName.trim().equalsIgnoreCase(schF.businessName != null ? schF.businessName.trim() : ""))
+                .findFirst();
+    }
+
+    private void validateForm8582Totals(Form8582Data form8582, List<ScheduleFData> scheduleFs, List<ValidationError> errors) {
+        BigDecimal calculatedTotalLoss = BigDecimal.ZERO;
         
-        if (activity.getActivityName() != null && !activity.getActivityName().isBlank()) {
-            data.addActivity(activity);
+        for (ScheduleFData schF : scheduleFs) {
+            if (!schF.materiallyParticipated && schF.calculatedNetPÏfitLoss != null && 
+                schF.calculatedNetPÏfitLoss.compareTo(BigDecimal.ZERO) < 0) {
+                calculatedTotalLoss = calculatedTotalLoss.add(schF.calculatedNetProfitLoss.abs());
+            }
+        }
+
+        if (form8582.totalOtherActivityLoss != null && 
+            calculatedTotalLoss.compareTo(form8582.totalOtherActivityLoss) != 0) {
+            errors.add(ValidationError.builder()
+                    .errorCode("SCHF-8582-004")
+                    .severity("ERROR")
+                    .fieldPath("/IRS8582/OtherActivityLossAmt")
+                    .message(String.format(
+                            "Form 8582 total other activity loss $%s does not match sum of Schedule F passive losses $%s",
+                            form8582.totalOtherActivityLoss, calculatedTotalLoss))
+                    .expectedValue(calculatedTotalLoss.toPlainString())
+                    .actualValue(form8582.totalOtherActivityLoss.toPlainString())
+                    .build());
         }
     }
 
-    // Data classes
+    private String getTextValue(JsonNode node, String fieldName) {
+        JsonNode field = node.get(fieldName);
+        return field != null && !field.isNull() ? field.asText() : null;
+    }
+
+    private BigDecimal parseBigDecimal(String value) {
+        if (value == null || value.trim().isEmpty()) {
+            return BigDecimal.ZERO;
+        }
+        try {
+            return new BigDecimal(value.replaceAll("[$,]", ""));
+        } catch (NumberFormatException e) {
+            return BigDecimal.ZERO;
+        }
+    }
+
+    @Data
+    @Builder
+    @AllArgsConstructor
+    @NoArgsConstructor
+    public static class ValidationResult {
+        private boolean isValid;
+        private List<ValidationError> errors;
+        private List<ValidationWarning> warnings;
+        private List<ScheduleFData> scheduleFData;
+        private Form8582Data form8582Data;
+    }
+
+    @Data
+    @Builder
+    @AllArgsConstructor
+    @NoArgsConstructor
+    public static class ValidationError {
+        private String errorCode;
+        private String severity;
+        private String fieldPath;
+        private String message;
+        private String expectedValue;
+        private String actualValue;
+        private String businessName;
+        private String ein;
+    }
+
+    @Data
+    @Builder
+    @AllArgsConstructor
+    @NoArgsConstructor
+    public static class ValidationWarning {
+        private String warningCode;
+        private String fieldPath;
+        private String message;
+        private String businessName;
+        private String ein;
+    }
+
+    @Data
+    @NoArgsConstructor
     public static class ScheduleFData {
         private String businessName;
+        private String ein;
+        private String principalProduct;
         private boolean materiallyParticipated;
-        private BigDecimal grossIncome = ZERO;
-        private BigDecimal totalExpenses = ZERO;
-        private BigDecimal netFarmProfitLoss = ZERO;
-
-        public String getBusinessName() { return businessName; }
-        public void setBusinessName(String businessName) { this.businessName = businessName; }
-        public boolean isMateriallyParticipated() { return materiallyParticipated; }
-        public void setMateriallyParticipated(boolean materiallyParticipated) { this.materiallyParticipated = materiallyParticipated; }
-        public BigDecimal getGrossIncome() { return grossIncome; }
-        public void setGrossIncome(BigDecimal grossIncome) { this.grossIncome = grossIncome; }
-        public BigDecimal getTotalExpenses() { return totalExpenses; }
-        public void setTotalExpenses(BigDecimal totalExpenses) { this.totalExpenses = totalExpenses; }
-        public BigDecimal getNetFarmProfitLoss() { return netFarmProfitLoss; }
-        public void setNetFarmProfitLoss(BigDecimal netFarmProfitLoss) { this.netFarmProfitLoss = netFarmProfitLoss; }
+        private BigDecimal grossIncome = BigDecimal.ZERO;
+        private BigDecimal totalExpenses = BigDecimal.ZERO;
+        private BigDecimal netFarmProfitLoss = BigDecimal.ZERO;
+        private BigDecimal calculatedNetProfitLoss;
     }
 
+    @Data
+    @NoArgsConstructor
     public static class Form8582Data {
-        private List<PassiveActivity> activities = new ArrayList<>();
-
-        public void addActivity(PassiveActivity activity) {
-            activities.add(activity);
-        }
-
-        public PassiveActivity findActivityByName(String name) {
-            return activities.stream()
-                .filter(a -> a.getActivityName().equalsIgnoreCase(name))
-                .findFirst()
-                .orElse(null);
-        }
-
-        public List<PassiveActivity> getActivities() { return activities; }
+        private BigDecimal totalOtherActivityLoss;
+        private List<PassiveActivity> passiveActivities = new ArrayList<>();
     }
 
+    @Data
+    @NoArgsConstructor
     public static class PassiveActivity {
         private String activityName;
-        private BigDecimal currentYearLoss = ZERO;
-
-        public String getActivityName() { return activityName; }
-        public void setActivityName(String activityName) { this.activityName = activityName; }
-        public BigDecimal getCurrentYearLoss() { return currentYearLoss; }
-        public void setCurrentYearLoss(BigDecimal currentYearLoss) { this.currentYearLoss = currentYearLoss; }
-    }
-
-    public static class ValidationResult {
-        private List<String> errors = new ArrayList<>();
-        private List<String> warnings = new ArrayList<>();
-        private List<String> successes = new ArrayList<>();
-        private List<String> infos = new ArrayList<>();
-
-        public void addError(String error) { errors.add(error); }
-        public void addWarning(String warning) { warnings.add(warning); }
-        public void addSuccess(String success) { successes.add(success); }
-        public void addInfo(String info) { infos.add(info); }
-
-        public boolean isValid() { return errors.isEmpty(); }
-        public List<String> getErrors() { return errors; }
-        public List<String> getWarnings() { return warnings; }
-        public List<String> getSuccesses() { return successes; }
-        public List<String> getInfos() { return infos; }
+        private BigDecimal currentYearLoss = BigDecimal.ZERO;
+        private BigDecimal overallLoss = BigDecimal.ZERO;
     }
 }
