@@ -4,11 +4,10 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
     <groupId>com.tax.dvs</groupId>
-    <artifactId>tax-dvs</artifactId>
+    <artifactId>schedule-f-validator</artifactId>
     <version>1.0.0</version>
     <packaging>jar</packaging>
-    <name>tax-dvs</name>
-    <description>Tax Data Validation Service</description>
+    <name>Schedule F 8582 Validator</name>
 
     <parent>
         <groupId>org.springframework.boot</groupId>
@@ -18,20 +17,23 @@
 
     <properties>
         <java.version>17</java.version>
+        <jackson.version>2.16.0</jackson.version>
     </properties>
 
     <dependencies>
         <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-web</artifactId>
+            <artifactId>spring-boot-starter</artifactId>
         </dependency>
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
+            <version>${jackson.version}</version>
         </dependency>
         <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
+            <version>1.18.30</version>
             <scope>provided</scope>
         </dependency>
     </dependencies>
