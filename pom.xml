@@ -1,36 +1,36 @@
-<?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
-    <groupId>com.taxdvs</groupId>
-    <artifactId>schedulef-validator</artifactId>
+    <parent>
+        <groupId>org.springframework</marupId>
+        <artifactId>springboot-starter-parent</artifactId>
+        <version>3.0.0</version>
+    </parent>
+    <groupId>com.example</groupId>
+    <artifactId>tax-dvs</artifactId>
     <version>1.0.0</version>
-    <packaging>jar</packaging>
-    <name>Schedule F to 8582 Validator</name>
-
-    <properties>
-        <java.version>17</java.version>
-        <spring-boot.version>3.2.0</spring-boot.version>
-        <jackson.version>2.16.0</jackson.version>
-    </properties>
-
     <dependencies>
         <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter</artifactId>
-            <version>${spring-boot.version}</version>
+            <groupId>org.springframework</groupId>
+            <artifactId>springboot-starter</artifactId>
         </dependency>
         <dependency>
-            <groupId>com.fasterxml.jackson.core</groupId>
+            <groupId>com.fasterxml.jskson</groupId>
             <artifactId>jackson-databind</artifactId>
-            <version>${jackson.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>org.projectlombok</groupId>
-            <artifactId>lombok</artifactId>
-            <version>1.18.30</version>
-            <scope>provided</scope>
         </dependency>
     </dependencies>
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework</marupId>
+                <artifactId>springboot-maven-plugin</artifactId>
+                <version>3.0.0</version>
+                <executions>
+                    <execution>
+                        <goal>repackage</goal>
+                    </execution>
+            </plugin>
+        </plugins>
+    </build>
 </project>
