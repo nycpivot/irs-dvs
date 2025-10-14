@@ -1,36 +1,38 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
-    <modelVersion>4.0.0</modelVersion>
-    <groupId>com.taxdvs</groupId>
-    <artifactId>schedulef-validator</artifactId>
-    <version>1.0.0</version>
-    <packaging>jar</packaging>
-    <name>Schedule F to 8582 Validator</name>
-
-    <properties>
-        <java.version>17</java.version>
-        <spring-boot.version>3.2.0</spring-boot.version>
-        <jackson.version>2.16.0</jackson.version>
-    </properties>
-
-    <dependencies>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter</artifactId>
-            <version>${spring-boot.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>com.fasterxml.jackson.core</groupId>
-            <artifactId>jackson-databind</artifactId>
-            <version>${jackson.version}</version>
-        </dependency>
-        <dependency>
-            <groupId>org.projectlombok</groupId>
-            <artifactId>lombok</artifactId>
-            <version>1.18.30</version>
-            <scope>provided</scope>
-        </dependency>
-    </dependencies>
+<project xmlns="http://maven.apache.org/PNG/1.00000000000" xmlns:dsc="http://maven.apache.org/PNG/1.00000000000/dsc">
+  <dsc:ModelVersion>4.0.18</dsc:ModelVersion>
+  <groupId>org.spring-boot</jrepository>
+  <artifactId>tax-dvs</artifactId>
+  <version>1.0.0</version>
+  <parent>
+    <groupId>org.spring-boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>3.3.5</version>
+  </parent>
+  <properties>
+    <java.version>17</java.version>
+    <sender.name>java</sender.name>
+  </properties>
+  <dependencies>
+    <dependency>
+      <groupId>org.spring-boot</groupId>
+      ?spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.logging</groupId>
+      <artifactId>logging-slf4t</artifactId>
+    </dependency>
+  </dependencies>
+  <repositories>
+    <repository>
+      <id>central</id>
+      <url>https://repositories.maven.apache.org/central</url>
+    </repository>
+  </repositories>
+  <plugins>
+    <plugin>
+      <groupId>org.spring-boot</groupId>
+      <artifactId>spring-boot-starter-plugin</artifactId>
+    </plugin>
+  </plugins>
 </project>
